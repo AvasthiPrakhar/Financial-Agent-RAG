@@ -116,8 +116,7 @@ with st.sidebar:
         st.rerun()
 
 # Initialize the primary LLM dynamically based on user selection
-# Minor update: LangChain deprecated 'model_name', replaced with 'model'
-llm = ChatGroq(model=target_model_id, groq_api_key=GROQ_API_KEY, temperature=0.1)
+llm = ChatGroq(model_name=target_model_id, groq_api_key=GROQ_API_KEY, temperature=0.1)
 
 # ==========================================
 # 3. LANGGRAPH STATE DEFINITION
@@ -273,12 +272,12 @@ with tab_chat:
                     for step in msg["trace"]:
                         st.write(step)
                         
-            # NEW: Show Source Documents
+            # Show Source Documents
             if "context" in msg and msg["context"]:
                 with st.expander("📄 View Retrieved Source Documents"):
                     for i, doc in enumerate(msg["context"]):
                         st.markdown(f"**Source Chunk {i+1}:**")
-                        st.info(doc) # st.info creates a nice, colored, word-wrapped card!
+                        st.info(doc)
 
     # Handle New User Input
     if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was the operating margin?'):"):
@@ -287,6 +286,8 @@ with tab_chat:
             st.markdown(prompt)
             
         with st.chat_message("assistant"):
+            # 1. COMPUTATION PHASE (Inside Spinner)
+            # We strictly run logic here, but render NO final text inside this block.
             with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
                 try:
                     initial_state = {
@@ -301,34 +302,45 @@ with tab_chat:
                     
                     final_state = agent_app.invoke(initial_state)
                     
-                    answer = final_state["draft_answer"]
-                    trace = final_state["trace_log"]
-                    context_docs = final_state["context"] # Capture the source chunks
+                    # Extract variables to be safely rendered outside the spinner
+                    answer = final_state.get("draft_answer", "")
+                    trace = final_state.get("trace_log", [])
+                    context_docs = final_state.get("context", []) 
                     
-                    st.markdown(answer)
-                    
-                    # Display the expanders for the current message
-                    with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
-                        for step in trace:
-                            st.write(step)
-                            
-                    with st.expander("📄 View Retrieved Source Documents"):
-                        if context_docs:
-                            for i, doc in enumerate(context_docs):
-                                st.markdown(f"**Source Chunk {i+1}:**")
-                                st.info(doc)
-                        else:
-                            st.warning("No relevant documents found in the database.")
-                            
-                    # Save to history
-                    st.session_state.messages.append({
-                        "role": "assistant", 
-                        "content": answer, 
-                        "trace": trace,
-                        "context": context_docs # Save chunks to history so they persist
-                    })
+                    error_msg = None
                 except Exception as e:
-                    st.error(f"Agent Execution Error: {e}")
+                    error_msg = str(e)
+            
+            # 2. RENDERING PHASE (Outside Spinner)
+            # This ensures Streamlit does not accidentally wipe the response text when the spinner closes.
+            if error_msg:
+                st.error(f"Agent Execution Error: {error_msg}")
+            else:
+                # Failsafe in case the LLM returned a completely blank response
+                if not answer or answer.strip() == "":
+                    answer = "⚠️ *The model finished executing but returned an empty response. Please try rephrasing your question or selecting a different model.*"
+                
+                st.markdown(answer)
+                
+                with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
+                    for step in trace:
+                        st.write(step)
+                        
+                with st.expander("📄 View Retrieved Source Documents"):
+                    if context_docs:
+                        for i, doc in enumerate(context_docs):
+                            st.markdown(f"**Source Chunk {i+1}:**")
+                            st.info(doc)
+                    else:
+                        st.warning("No relevant documents found in the database.")
+                        
+                # Save state so the response persists on refresh
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": answer, 
+                    "trace": trace,
+                    "context": context_docs 
+                })
 
 # ------------------------------------------
 # TAB 2: METHODOLOGY
