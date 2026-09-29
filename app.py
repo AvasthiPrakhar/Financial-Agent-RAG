@@ -61,10 +61,15 @@ def retrieve_and_rerank(state: AgentState):
         texts=[query], model="embed-english-v3.0", input_type="search_query"
     ).embeddings[0]
     
-    search_results = qdrant_client.search(
-        collection_name=COLLECTION_NAME, query_vector=query_vector, limit=15
+    # THE FIX: Using Qdrant's modern query_points() instead of the deprecated search()
+    search_results = qdrant_client.query_points(
+        collection_name=COLLECTION_NAME, 
+        query=query_vector, 
+        limit=15
     )
-    docs = [hit.payload["text"] for hit in search_results]
+    
+    # Extract text from the new modern response structure
+    docs = [point.payload["text"] for point in search_results.points]
     
     # 2. Cohere Rerank (Boosts accuracy dramatically)
     if docs:
