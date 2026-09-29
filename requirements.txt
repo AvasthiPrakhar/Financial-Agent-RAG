@@ -1,0 +1,6 @@
+streamlit
+qdrant-client
+cohere
+langchain-groq
+langgraph
+langchain-core
