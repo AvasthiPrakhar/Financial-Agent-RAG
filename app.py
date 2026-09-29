@@ -272,82 +272,89 @@ with tab_chat:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Display Chat History
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            
-            # Show Trace Log
-            if "trace" in msg:
-                with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
-                    for step in msg["trace"]:
-                        st.write(step)
-                        
-            # Show Source Documents
-            if "context" in msg and msg["context"]:
-                with st.expander("📄 View Retrieved Source Documents"):
-                    for i, doc in enumerate(msg["context"]):
-                        st.markdown(f"**Source Chunk {i+1}:**")
-                        st.info(doc)
+    # --- UI FIX: Dedicated container for Chat History ---
+    chat_container = st.container()
 
-    # Handle New User Input
-    if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was the operating margin?'):"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-            
-        with st.chat_message("assistant"):
-            # 1. COMPUTATION PHASE (Inside Spinner)
-            with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
-                try:
-                    initial_state = {
-                        "question": prompt,
-                        "context": [],
-                        "draft_answer": "",
-                        "feedback": "",
-                        "hallucination_found": "no",
-                        "iterations": 0,
-                        "trace_log": []
-                    }
-                    
-                    final_state = agent_app.invoke(initial_state)
-                    
-                    answer = final_state.get("draft_answer", "")
-                    trace = final_state.get("trace_log", [])
-                    context_docs = final_state.get("context", []) 
-                    
-                    error_msg = None
-                except Exception as e:
-                    error_msg = str(e)
-            
-            # 2. RENDERING PHASE (Outside Spinner)
-            if error_msg:
-                st.error(f"Agent Execution Error: {error_msg}")
-            else:
-                if not answer or answer.strip() == "":
-                    answer = "⚠️ *The model finished executing but returned an empty response. Please try rephrasing your question or selecting a different model.*"
+    # Display Chat History ONLY inside the container
+    with chat_container:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
                 
-                st.markdown(answer)
-                
-                with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
-                    for step in trace:
-                        st.write(step)
-                        
-                with st.expander("📄 View Retrieved Source Documents"):
-                    if context_docs:
-                        for i, doc in enumerate(context_docs):
+                if "trace" in msg:
+                    with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
+                        for step in msg["trace"]:
+                            st.write(step)
+                            
+                if "context" in msg and msg["context"]:
+                    with st.expander("📄 View Retrieved Source Documents"):
+                        for i, doc in enumerate(msg["context"]):
                             st.markdown(f"**Source Chunk {i+1}:**")
                             st.info(doc)
-                    else:
-                        st.warning("No relevant documents found in the database.")
+
+    # Handle New User Input (Renders below the chat_container)
+    if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was the operating margin?'):"):
+        
+        # Save user prompt to state
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # --- UI FIX: Force new messages to render INSIDE the container above the input bar ---
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(prompt)
+                
+            with st.chat_message("assistant"):
+                # 1. COMPUTATION PHASE (Inside Spinner)
+                with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
+                    try:
+                        initial_state = {
+                            "question": prompt,
+                            "context": [],
+                            "draft_answer": "",
+                            "feedback": "",
+                            "hallucination_found": "no",
+                            "iterations": 0,
+                            "trace_log": []
+                        }
                         
-                # Save state
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": answer, 
-                    "trace": trace,
-                    "context": context_docs 
-                })
+                        final_state = agent_app.invoke(initial_state)
+                        
+                        answer = final_state.get("draft_answer", "")
+                        trace = final_state.get("trace_log", [])
+                        context_docs = final_state.get("context", []) 
+                        
+                        error_msg = None
+                    except Exception as e:
+                        error_msg = str(e)
+                
+                # 2. RENDERING PHASE (Outside Spinner)
+                if error_msg:
+                    st.error(f"Agent Execution Error: {error_msg}")
+                else:
+                    if not answer or answer.strip() == "":
+                        answer = "⚠️ *The model finished executing but returned an empty response. Please try rephrasing your question or selecting a different model.*"
+                    
+                    st.markdown(answer)
+                    
+                    with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
+                        for step in trace:
+                            st.write(step)
+                            
+                    with st.expander("📄 View Retrieved Source Documents"):
+                        if context_docs:
+                            for i, doc in enumerate(context_docs):
+                                st.markdown(f"**Source Chunk {i+1}:**")
+                                st.info(doc)
+                        else:
+                            st.warning("No relevant documents found in the database.")
+                            
+                    # Save agent state to history
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": answer, 
+                        "trace": trace,
+                        "context": context_docs 
+                    })
 
 # ------------------------------------------
 # TAB 2: METHODOLOGY
