@@ -61,7 +61,7 @@ def fetch_available_models():
     models_list = []
     if GROQ_API_KEY:
         try:
-            url = "[https://api.groq.com/openai/v1/models](https://api.groq.com/openai/v1/models)"
+            url = "https://api.groq.com/openai/v1/models"
             headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
             resp = requests.get(url, headers=headers, timeout=5)
             if resp.status_code == 200:
@@ -76,8 +76,8 @@ def fetch_available_models():
         except Exception:
             pass
             
-    if not models_list:
-        models_list.append({"id": "llama-3.1-8b-instant", "display_name": "Groq (llama-3.1-8b-instant) - Fallback"})
+    # REMOVED: The hardcoded llama fallback that caused the 404 error.
+    # We strictly return what the API provides.
     return models_list
 
 with st.sidebar:
@@ -88,14 +88,19 @@ with st.sidebar:
     )
     st.divider()
     
-    st.link_button("🔗 LinkedIn", "[https://linkedin.com/in/your-profile](https://linkedin.com/in/your-profile)", use_container_width=True)
-    st.link_button("🐙 GitHub", "[https://github.com/your-github](https://github.com/your-github)", use_container_width=True)
-    st.link_button("📊 Kaggle", "[https://kaggle.com/your-kaggle](https://kaggle.com/your-kaggle)", use_container_width=True)
+    st.link_button("🔗 LinkedIn", "https://linkedin.com/in/your-profile", use_container_width=True)
+    st.link_button("🐙 GitHub", "https://github.com/your-github", use_container_width=True)
+    st.link_button("📊 Kaggle", "https://kaggle.com/your-kaggle", use_container_width=True)
     
     st.divider()
     st.markdown("### ⚙️ Agent Configuration")
     
     available_models = fetch_available_models()
+    
+    # NEW: Safety check to prevent app crash if Groq API is down or key is invalid
+    if not available_models:
+        st.error("Failed to fetch available models from Groq. Please verify your API key and connection.")
+        st.stop()
     
     # Extract just the display names for the selectbox
     display_names = [m["display_name"] for m in available_models]
@@ -116,8 +121,8 @@ with st.sidebar:
     selected_display_name = st.selectbox(
         "Select LLM Architecture", 
         options=display_names,
-        index=default_index,
-        help="Dynamically fetched from Groq. Auto-defaults to optimized text models."
+        index=default_index, # If regex fails, this remains 0 (first model in the cleaned list)
+        help="Dynamically fetched from Groq. Auto-defaults to optimized text models if available."
     )
     
     target_model_id = model_map[selected_display_name]
@@ -127,7 +132,6 @@ with st.sidebar:
         st.rerun()
 
 # Initialize the primary LLM dynamically based on user selection
-# Note: Using the modern `model` param instead of deprecated `model_name`
 llm = ChatGroq(model=target_model_id, api_key=GROQ_API_KEY, temperature=0.1)
 
 # ==========================================
