@@ -101,11 +101,22 @@ with st.sidebar:
         st.error("⚠️ Failed to fetch models from Groq. Please check your API key and connection.")
         st.stop()
         
+    display_names = [m["display_name"] for m in available_models]
     model_map = {m["display_name"]: m["id"] for m in available_models}
+    
+    # --- EXACT MATCH DEFAULT SELECTION LOGIC ---
+    TARGET_MODEL_ID = "openai/gpt-oss-120b"
+    default_index = 0
+    
+    for i, m in enumerate(available_models):
+        if m["id"] == TARGET_MODEL_ID:
+            default_index = i
+            break
     
     selected_display_name = st.selectbox(
         "Select LLM Architecture", 
-        options=list(model_map.keys()),
+        options=display_names,
+        index=default_index,
         help="Dynamically fetched from Groq. Non-chat models are automatically filtered out."
     )
     
@@ -287,7 +298,6 @@ with tab_chat:
             
         with st.chat_message("assistant"):
             # 1. COMPUTATION PHASE (Inside Spinner)
-            # We strictly run logic here, but render NO final text inside this block.
             with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
                 try:
                     initial_state = {
@@ -302,7 +312,6 @@ with tab_chat:
                     
                     final_state = agent_app.invoke(initial_state)
                     
-                    # Extract variables to be safely rendered outside the spinner
                     answer = final_state.get("draft_answer", "")
                     trace = final_state.get("trace_log", [])
                     context_docs = final_state.get("context", []) 
@@ -312,11 +321,9 @@ with tab_chat:
                     error_msg = str(e)
             
             # 2. RENDERING PHASE (Outside Spinner)
-            # This ensures Streamlit does not accidentally wipe the response text when the spinner closes.
             if error_msg:
                 st.error(f"Agent Execution Error: {error_msg}")
             else:
-                # Failsafe in case the LLM returned a completely blank response
                 if not answer or answer.strip() == "":
                     answer = "⚠️ *The model finished executing but returned an empty response. Please try rephrasing your question or selecting a different model.*"
                 
@@ -334,7 +341,7 @@ with tab_chat:
                     else:
                         st.warning("No relevant documents found in the database.")
                         
-                # Save state so the response persists on refresh
+                # Save state
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": answer, 
