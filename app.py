@@ -2,10 +2,11 @@
 Agentic RAG Financial Assistant using LangGraph, Qdrant, Cohere, and Groq.
 """
 import os
-import json
 import requests
 import streamlit as st
 from typing import TypedDict, List
+from pydantic import BaseModel, Field
+
 from qdrant_client import QdrantClient
 import cohere
 from langchain_groq import ChatGroq
@@ -66,14 +67,11 @@ def fetch_available_models():
                 data = resp.json().get("data", [])
                 for m in data:
                     m_id = m.get("id", "")
-                    
                     # Filter out obvious non-chat or internal guard models
                     if not any(excluded in m_id.lower() for excluded in ["whisper", "guard", "safeguard"]):
                         models_list.append({"id": m_id, "display_name": f"Groq ({m_id})"})
         except Exception:
             pass
-            
-    # Strictly return the fetched list. No hardcoded models appended.
     return models_list
 
 with st.sidebar:
@@ -90,13 +88,11 @@ with st.sidebar:
 
     st.divider()
     st.markdown("📧 **prakharavasthi1999@gmail.com**")
-
     st.divider()
     st.markdown("### ⚙️ Agent Configuration")
     
     available_models = fetch_available_models()
     
-    # Safety check: Prevent Streamlit selectbox crash if API fails to return models
     if not available_models:
         st.error("⚠️ Failed to fetch models from Groq. Please check your API key and connection.")
         st.stop()
@@ -112,7 +108,7 @@ with st.sidebar:
         if m["id"] == TARGET_MODEL_ID:
             default_index = i
             break
-    
+            
     selected_display_name = st.selectbox(
         "Select LLM Architecture", 
         options=display_names,
@@ -127,13 +123,15 @@ with st.sidebar:
         st.rerun()
 
 # Initialize the primary LLM dynamically based on user selection
-llm = ChatGroq(model_name=target_model_id, groq_api_key=GROQ_API_KEY, temperature=0.1)
+llm = ChatGroq(model=target_model_id, api_key=GROQ_API_KEY, temperature=0.1)
 
 # ==========================================
-# 3. LANGGRAPH STATE DEFINITION
+# 3. LANGGRAPH STATE & SCHEMAS
 # ==========================================
 class AgentState(TypedDict):
+    chat_history: List[dict]
     question: str
+    standalone_query: str
     context: List[str]
     draft_answer: str
     feedback: str
@@ -141,13 +139,49 @@ class AgentState(TypedDict):
     iterations: int
     trace_log: List[str]
 
+class GuardrailOutput(BaseModel):
+    hallucinated: str = Field(description="Output 'yes' if it made up facts/numbers, or 'no' if it is fully supported.")
+    feedback: str = Field(description="Detail exactly what was made up (or write 'Perfect' if none).")
+
 # ==========================================
 # 4. AGENT NODES (The Brains of the Operation)
 # ==========================================
+def reformulate_query(state: AgentState):
+    """Rewrites a conversational follow-up into a standalone search query."""
+    state["trace_log"].append("🔄 **Step 1: Analyzing conversation history...**")
+    
+    if not state["chat_history"]:
+        state["standalone_query"] = state["question"]
+        state["trace_log"].append(f"📝 No history found. Using original query: '{state['question']}'")
+        return state
+        
+    # Format the last 4 messages for context
+    recent_history = state["chat_history"][-4:]
+    history_str = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent_history])
+    
+    prompt = f"""
+    Given the following conversation history and the user's latest follow-up question, rewrite the follow-up question to be a standalone search query that contains all necessary context (e.g., specific company names, dates) mentioned previously.
+    If the question is already clear and standalone, return it exactly as is.
+    Do not answer the question, ONLY return the rewritten search query.
+    
+    Conversation History:
+    {history_str}
+    
+    Latest Question: {state['question']}
+    
+    Standalone Query (return nothing else):
+    """
+    
+    response = llm.invoke([HumanMessage(content=prompt)])
+    rewritten = response.content.strip()
+    state["standalone_query"] = rewritten
+    state["trace_log"].append(f"🧠 Rewrote query to: '{rewritten}'")
+    return state
+
 def retrieve_and_rerank(state: AgentState):
     """Fetches documents from Qdrant and uses Cohere to Rerank the best ones."""
-    query = state["question"]
-    state["trace_log"].append("🔍 **Step 1: Retrieval & Reranking started...**")
+    query = state["standalone_query"] # Use the reformatted query
+    state["trace_log"].append("🔍 **Step 2: Retrieval & Reranking started...**")
     
     query_vector = cohere_client.embed(
         texts=[query], model="embed-english-v3.0", input_type="search_query"
@@ -172,7 +206,7 @@ def retrieve_and_rerank(state: AgentState):
 
 def generate_answer(state: AgentState):
     """Generates an answer using the retrieved context."""
-    state["trace_log"].append(f"✍️ **Step 2: Generating draft answer (Iteration {state['iterations'] + 1})...**")
+    state["trace_log"].append(f"✍️ **Step 3: Generating draft answer (Iteration {state['iterations'] + 1})...**")
     
     context_str = "\n\n".join(state["context"])
     feedback = state.get("feedback", "")
@@ -184,7 +218,7 @@ def generate_answer(state: AgentState):
     Context:
     {context_str}
     
-    User Question: {state['question']}
+    User Question: {state['standalone_query']}
     """
     
     if feedback:
@@ -197,7 +231,7 @@ def generate_answer(state: AgentState):
 
 def evaluate_hallucination(state: AgentState):
     """The Guardrail: Checks if the generated answer made up fake numbers."""
-    state["trace_log"].append("⚖️ **Step 3: Guardrail Evaluation...**")
+    state["trace_log"].append("⚖️ **Step 4: Guardrail Evaluation...**")
     
     context_str = "\n\n".join(state["context"])
     answer = state["draft_answer"]
@@ -210,24 +244,20 @@ def evaluate_hallucination(state: AgentState):
     
     Draft Answer:
     {answer}
-    
-    Output a strictly valid JSON object with two keys:
-    1. "hallucinated": "yes" if it made up facts/numbers, or "no" if it is fully supported.
-    2. "feedback": Detail exactly what was made up (or write "Perfect" if none).
-    
-    JSON Output:
     """
     
-    response = llm.invoke([SystemMessage(content="Output ONLY valid JSON. No markdown tags."), HumanMessage(content=prompt)])
+    structured_llm = llm.with_structured_output(GuardrailOutput)
     
     try:
-        clean_json = response.content.replace("```json", "").replace("```", "").strip()
-        eval_result = json.loads(clean_json)
-        state["hallucination_found"] = eval_result.get("hallucinated", "yes").lower()
-        state["feedback"] = eval_result.get("feedback", "Error parsing feedback.")
+        eval_result = structured_llm.invoke([
+            SystemMessage(content="You are a strict audit bot evaluating factual accuracy."), 
+            HumanMessage(content=prompt)
+        ])
+        state["hallucination_found"] = eval_result.hallucinated.lower()
+        state["feedback"] = eval_result.feedback
     except Exception as e:
         state["hallucination_found"] = "yes"
-        state["feedback"] = "System failed to parse evaluation. Retrying."
+        state["feedback"] = f"System failed to parse evaluation. Retrying. Error: {str(e)}"
 
     if state["hallucination_found"] == "yes":
         state["trace_log"].append(f"❌ **Hallucination Detected!** Reason: {state['feedback']}")
@@ -245,11 +275,13 @@ def should_regenerate(state: AgentState):
     return END
 
 workflow = StateGraph(AgentState)
+workflow.add_node("reformulate_query", reformulate_query)
 workflow.add_node("retrieve_and_rerank", retrieve_and_rerank)
 workflow.add_node("generate_answer", generate_answer)
 workflow.add_node("evaluate_hallucination", evaluate_hallucination)
 
-workflow.add_edge(START, "retrieve_and_rerank")
+workflow.add_edge(START, "reformulate_query")
+workflow.add_edge("reformulate_query", "retrieve_and_rerank")
 workflow.add_edge("retrieve_and_rerank", "generate_answer")
 workflow.add_edge("generate_answer", "evaluate_hallucination")
 workflow.add_conditional_edges("evaluate_hallucination", should_regenerate)
@@ -307,8 +339,13 @@ with tab_chat:
                 # 1. COMPUTATION PHASE (Inside Spinner)
                 with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
                     try:
+                        # Clean the history to map strictly role and content for the LLM
+                        clean_history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[:-1]]
+                        
                         initial_state = {
+                            "chat_history": clean_history,
                             "question": prompt,
+                            "standalone_query": "",
                             "context": [],
                             "draft_answer": "",
                             "feedback": "",
@@ -381,17 +418,20 @@ with tab_methodology:
 
     with col_m2:
         st.subheader("3. LangGraph State Machine (Self-Reflection)")
-        st.write("To prevent the LLM from hallucinating financial numbers, the generation process is governed by a **LangGraph State Machine** containing three distinct operational nodes:")
+        st.write("To prevent the LLM from hallucinating financial numbers, the generation process is governed by a **LangGraph State Machine** containing distinct operational nodes:")
         
-        with st.expander("Node A: The Generator", expanded=True):
-            st.write("A Groq-hosted LLM (e.g., LLaMA 3.1) receives the 5 reranked chunks and drafts an initial answer based *strictly* on the provided context.")
+        with st.expander("Node A: Context Reformulator", expanded=True):
+            st.write("Intercepts follow-up questions and uses the session's chat history to rewrite vague pronouns (e.g., 'What were its earnings?') into precise, standalone database search queries.")
+        
+        with st.expander("Node B: The Generator", expanded=True):
+            st.write("A Groq-hosted LLM receives the 5 reranked chunks and drafts an initial answer based *strictly* on the provided context.")
             
-        with st.expander("Node B: The Hallucination Evaluator (Guardrail)", expanded=True):
-            st.write("A secondary, strict 'Auditor Prompt' reviews the draft answer against the source context. It outputs a deterministic JSON payload: `{'hallucinated': 'yes/no', 'feedback': '...'}` checking if the Generator hallucinated any financial figures.")
+        with st.expander("Node C: The Hallucination Evaluator (Guardrail)", expanded=True):
+            st.write("A secondary, strict 'Auditor Prompt' reviews the draft answer against the source context. It outputs a deterministic JSON payload checking if the Generator hallucinated any financial figures.")
 
-        with st.expander("Node C: The Router", expanded=True):
-            st.write("If the Evaluator detects a hallucination, the Router loops the workflow back to the Generator, injecting the critical feedback and forcing it to rewrite the answer. This creates a self-correcting, fault-tolerant AI Agent.")
+        with st.expander("Node D: The Router", expanded=True):
+            st.write("If the Evaluator detects a hallucination, the Router loops the workflow back to the Generator, injecting the critical feedback and forcing it to rewrite the answer.")
 
     st.divider()
     st.markdown("### The Result")
-    st.write("By combining Cohere's precise reranking with LangGraph's self-corrective loops, this platform guarantees that financial answers are highly relevant, strictly grounded in the SEC filings, and free of AI hallucinations.")
+    st.write("By combining Cohere's precise reranking with LangGraph's self-corrective loops and conversational memory, this platform guarantees that financial answers are highly relevant, context-aware, strictly grounded in SEC filings, and free of AI hallucinations.")
