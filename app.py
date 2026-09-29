@@ -148,14 +148,13 @@ class GuardrailOutput(BaseModel):
 # ==========================================
 def reformulate_query(state: AgentState):
     """Rewrites a conversational follow-up into a standalone search query."""
-    state["trace_log"].append("🔄 **Step 1: Analyzing conversation history...**")
+    state["trace_log"].append("🔄 **Step 1: Analyzing query...**")
     
     if not state["chat_history"]:
         state["standalone_query"] = state["question"]
-        state["trace_log"].append(f"📝 No history found. Using original query: '{state['question']}'")
+        state["trace_log"].append(f"📝 Executing direct extraction query: '{state['question']}'")
         return state
         
-    # Format the last 4 messages for context
     recent_history = state["chat_history"][-4:]
     history_str = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent_history])
     
@@ -180,7 +179,7 @@ def reformulate_query(state: AgentState):
 
 def retrieve_and_rerank(state: AgentState):
     """Fetches documents from Qdrant and uses Cohere to Rerank the best ones."""
-    query = state["standalone_query"] # Use the reformatted query
+    query = state["standalone_query"]
     state["trace_log"].append("🔍 **Step 2: Retrieval & Reranking started...**")
     
     query_vector = cohere_client.embed(
@@ -291,107 +290,88 @@ agent_app = workflow.compile()
 # ==========================================
 # 6. MAIN UI (TABS)
 # ==========================================
-tab_chat, tab_methodology = st.tabs(["💬 Financial AI Agent", "🧠 Agentic RAG Architecture"])
+tab_chat, tab_methodology = st.tabs(["💬 Audit Terminal", "🧠 Agentic RAG Architecture"])
 
 # ------------------------------------------
-# TAB 1: CHAT INTERFACE
+# TAB 1: AUDIT TERMINAL INTERFACE
 # ------------------------------------------
 with tab_chat:
     st.title("📈 Enterprise Financial AI Agent")
-    st.markdown("*A self-correcting Agentic RAG pipeline querying the `FinanceBench` SEC 10-K dataset.*")
-    st.divider()
+    st.info("💡 **System Purpose:** This is a precision Agentic RAG terminal designed for strictly grounded factual extraction and automated hallucination auditing. It queries the `FinanceBench` SEC 10-K dataset.")
+    
+    # --- UI FIX: Use a Form instead of Chat Input to enforce a "Search/Audit" mindset ---
+    with st.form("audit_form"):
+        prompt = st.text_input(
+            "Target Information:", 
+            placeholder="e.g., 'What was the exact operating margin reported for 2023?'"
+        )
+        submitted = st.form_submit_button("Run Extraction & Quality Audit", type="primary")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # --- UI FIX: Dedicated container for Chat History ---
-    chat_container = st.container()
-
-    # Display Chat History ONLY inside the container
-    with chat_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+    if submitted and prompt:
+        with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
+            try:
+                # We initialize without chat history to enforce single-turn, high-precision queries
+                initial_state = {
+                    "chat_history": [],
+                    "question": prompt,
+                    "standalone_query": "",
+                    "context": [],
+                    "draft_answer": "",
+                    "feedback": "",
+                    "hallucination_found": "no",
+                    "iterations": 0,
+                    "trace_log": []
+                }
                 
-                if "trace" in msg:
-                    with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
-                        for step in msg["trace"]:
-                            st.write(step)
-                            
-                if "context" in msg and msg["context"]:
-                    with st.expander("📄 View Retrieved Source Documents"):
-                        for i, doc in enumerate(msg["context"]):
-                            st.markdown(f"**Source Chunk {i+1}:**")
-                            st.info(doc)
-
-    # Handle New User Input (Renders below the chat_container)
-    if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was the operating margin?'):"):
+                final_state = agent_app.invoke(initial_state)
+                
+                answer = final_state.get("draft_answer", "")
+                trace = final_state.get("trace_log", [])
+                context_docs = final_state.get("context", []) 
+                hallucination_status = final_state.get("hallucination_found", "yes")
+                
+                error_msg = None
+            except Exception as e:
+                error_msg = str(e)
         
-        # Save user prompt to state
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # --- UI FIX: Force new messages to render INSIDE the container above the input bar ---
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(prompt)
+        # --- RENDERING THE AUDIT REPORT ---
+        if error_msg:
+            st.error(f"Agent Execution Error: {error_msg}")
+        else:
+            if not answer or answer.strip() == "":
+                answer = "⚠️ *The model returned an empty response. Please check your query.*"
+            
+            st.markdown("### 📑 Audit Report")
+            
+            # Use columns to display the answer alongside the Quality Check status
+            col_ans, col_status = st.columns([3, 1])
+            
+            with col_ans:
+                st.markdown("**Extracted Answer:**")
+                st.write(answer)
                 
-            with st.chat_message("assistant"):
-                # 1. COMPUTATION PHASE (Inside Spinner)
-                with st.spinner(f"Agent ({target_model_id}) is retrieving, analyzing, and auditing..."):
-                    try:
-                        # Clean the history to map strictly role and content for the LLM
-                        clean_history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages[:-1]]
-                        
-                        initial_state = {
-                            "chat_history": clean_history,
-                            "question": prompt,
-                            "standalone_query": "",
-                            "context": [],
-                            "draft_answer": "",
-                            "feedback": "",
-                            "hallucination_found": "no",
-                            "iterations": 0,
-                            "trace_log": []
-                        }
-                        
-                        final_state = agent_app.invoke(initial_state)
-                        
-                        answer = final_state.get("draft_answer", "")
-                        trace = final_state.get("trace_log", [])
-                        context_docs = final_state.get("context", []) 
-                        
-                        error_msg = None
-                    except Exception as e:
-                        error_msg = str(e)
-                
-                # 2. RENDERING PHASE (Outside Spinner)
-                if error_msg:
-                    st.error(f"Agent Execution Error: {error_msg}")
+            with col_status:
+                st.markdown("**Quality Check:**")
+                if hallucination_status == "no":
+                    st.success("✅ Grounded (Passed)")
                 else:
-                    if not answer or answer.strip() == "":
-                        answer = "⚠️ *The model finished executing but returned an empty response. Please try rephrasing your question or selecting a different model.*"
+                    st.error("❌ Hallucination Detected")
+                    st.caption("The agent reached its loop limit but failed to fully ground the answer.")
+
+            st.divider()
+            
+            # Keep the analytical tools available for the current query
+            with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
+                for step in trace:
+                    st.write(step)
                     
-                    st.markdown(answer)
-                    
-                    with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
-                        for step in trace:
-                            st.write(step)
-                            
-                    with st.expander("📄 View Retrieved Source Documents"):
-                        if context_docs:
-                            for i, doc in enumerate(context_docs):
-                                st.markdown(f"**Source Chunk {i+1}:**")
-                                st.info(doc)
-                        else:
-                            st.warning("No relevant documents found in the database.")
-                            
-                    # Save agent state to history
-                    st.session_state.messages.append({
-                        "role": "assistant", 
-                        "content": answer, 
-                        "trace": trace,
-                        "context": context_docs 
-                    })
+            with st.expander("📄 View Retrieved Source Documents"):
+                if context_docs:
+                    for i, doc in enumerate(context_docs):
+                        st.markdown(f"**Source Chunk {i+1}:**")
+                        st.info(doc)
+                else:
+                    st.warning("No relevant documents found in the database.")
 
 # ------------------------------------------
 # TAB 2: METHODOLOGY
