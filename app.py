@@ -55,7 +55,7 @@ COLLECTION_NAME = "financial_reports_cohere"
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_available_models():
-    """Fetches dynamic model list directly from Groq."""
+    """Fetches dynamic model list directly from Groq and filters non-chat models."""
     models_list = []
     if GROQ_API_KEY:
         try:
@@ -65,14 +65,15 @@ def fetch_available_models():
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
                 for m in data:
-                    m_id = m.get("id")
-                    if "whisper" not in m_id.lower():
+                    m_id = m.get("id", "")
+                    
+                    # Filter out obvious non-chat or internal guard models
+                    if not any(excluded in m_id.lower() for excluded in ["whisper", "guard", "safeguard"]):
                         models_list.append({"id": m_id, "display_name": f"Groq ({m_id})"})
         except Exception:
             pass
             
-    if not models_list:
-        models_list.append({"id": "llama-3.1-8b-instant", "display_name": "Groq (llama-3.1-8b-instant) - Fallback"})
+    # Strictly return the fetched list. No hardcoded models appended.
     return models_list
 
 with st.sidebar:
@@ -83,7 +84,6 @@ with st.sidebar:
     )
     st.divider()
     
-    # NOTE: Add your real URLs here!
     st.link_button("🔗 LinkedIn", "http://www.linkedin.com/in/prakhar-avasthi-35067a1bb", use_container_width=True)
     st.link_button("🐙 GitHub", "https://github.com/AvasthiPrakhar", use_container_width=True)
     st.link_button("📊 Kaggle", "https://www.kaggle.com/avasthiprakhar", use_container_width=True)
@@ -95,12 +95,18 @@ with st.sidebar:
     st.markdown("### ⚙️ Agent Configuration")
     
     available_models = fetch_available_models()
+    
+    # Safety check: Prevent Streamlit selectbox crash if API fails to return models
+    if not available_models:
+        st.error("⚠️ Failed to fetch models from Groq. Please check your API key and connection.")
+        st.stop()
+        
     model_map = {m["display_name"]: m["id"] for m in available_models}
     
     selected_display_name = st.selectbox(
         "Select LLM Architecture", 
         options=list(model_map.keys()),
-        help="Dynamically fetched from Groq. 'llama-3.1-8b-instant' is highly recommended for speed."
+        help="Dynamically fetched from Groq. Non-chat models are automatically filtered out."
     )
     
     target_model_id = model_map[selected_display_name]
@@ -110,7 +116,8 @@ with st.sidebar:
         st.rerun()
 
 # Initialize the primary LLM dynamically based on user selection
-llm = ChatGroq(model_name=target_model_id, groq_api_key=GROQ_API_KEY, temperature=0.1)
+# Minor update: LangChain deprecated 'model_name', replaced with 'model'
+llm = ChatGroq(model=target_model_id, groq_api_key=GROQ_API_KEY, temperature=0.1)
 
 # ==========================================
 # 3. LANGGRAPH STATE DEFINITION
