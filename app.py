@@ -252,15 +252,26 @@ with tab_chat:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # Display Chat History
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            
+            # Show Trace Log
             if "trace" in msg:
                 with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
                     for step in msg["trace"]:
                         st.write(step)
+                        
+            # NEW: Show Source Documents
+            if "context" in msg and msg["context"]:
+                with st.expander("📄 View Retrieved Source Documents"):
+                    for i, doc in enumerate(msg["context"]):
+                        st.markdown(f"**Source Chunk {i+1}:**")
+                        st.info(doc) # st.info creates a nice, colored, word-wrapped card!
 
-    if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was Best Buy's revenue in 2023?'):"):
+    # Handle New User Input
+    if prompt := st.chat_input("Ask a question about the financial reports (e.g., 'What was the operating margin?'):"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -282,13 +293,30 @@ with tab_chat:
                     
                     answer = final_state["draft_answer"]
                     trace = final_state["trace_log"]
+                    context_docs = final_state["context"] # Capture the source chunks
                     
                     st.markdown(answer)
+                    
+                    # Display the expanders for the current message
                     with st.expander("🔍 View AI Thought Process (LangGraph Trace)"):
                         for step in trace:
                             st.write(step)
                             
-                    st.session_state.messages.append({"role": "assistant", "content": answer, "trace": trace})
+                    with st.expander("📄 View Retrieved Source Documents"):
+                        if context_docs:
+                            for i, doc in enumerate(context_docs):
+                                st.markdown(f"**Source Chunk {i+1}:**")
+                                st.info(doc)
+                        else:
+                            st.warning("No relevant documents found in the database.")
+                            
+                    # Save to history
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": answer, 
+                        "trace": trace,
+                        "context": context_docs # Save chunks to history so they persist
+                    })
                 except Exception as e:
                     st.error(f"Agent Execution Error: {e}")
 
